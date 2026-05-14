@@ -229,8 +229,12 @@ struct GetRowsetsCntl : std::enable_shared_from_this<GetRowsetsCntl> {
         for (const auto& [ip, port] : req_addrs) {
             bthread_t tid;
             bthread_attr_t attr = BTHREAD_ATTR_NORMAL;
+            auto peer_ip = ip;
+            auto peer_port = port;
 
-            bool succ = call_bthread(tid, &attr, [self = shared_from_this(), &ip, port]() {
+            bool succ = call_bthread(tid, &attr, [self = shared_from_this(), peer_ip, peer_port]() {
+                const auto& ip = peer_ip;
+                const auto port = peer_port;
                 LOG(INFO) << "start to get tablet rowsets from peer BE, ip=" << ip;
                 Defer defer_log {[&ip, port]() {
                     LOG(INFO) << "finish to get rowsets from peer BE, ip=" << ip

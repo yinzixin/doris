@@ -728,8 +728,13 @@ if (GLIBC_COMPATIBILITY)
 endif()
 
 if (NOT OS_MACOSX)
-    set(CMAKE_CXX_STANDARD_LIBRARIES "-lrt -l:libbfd.a -liberty -lc -lm -ldl -pthread")
-    set(CMAKE_C_STANDARD_LIBRARIES "-lrt -l:libbfd.a -liberty -lc -lm -ldl -pthread")
+    if(EXISTS /lib/x86_64-linux-gnu/libsframe.a OR EXISTS /usr/lib/x86_64-linux-gnu/libsframe.a)
+        set(CMAKE_CXX_STANDARD_LIBRARIES "-lrt -l:libbfd.a -l:libsframe.a -liberty -lc -lm -ldl -pthread")
+        set(CMAKE_C_STANDARD_LIBRARIES "-lrt -l:libbfd.a -l:libsframe.a -liberty -lc -lm -ldl -pthread")
+    else()
+        set(CMAKE_CXX_STANDARD_LIBRARIES "-lrt -l:libbfd.a -liberty -lc -lm -ldl -pthread")
+        set(CMAKE_C_STANDARD_LIBRARIES "-lrt -l:libbfd.a -liberty -lc -lm -ldl -pthread")
+    endif()
 else()
     set(DORIS_LINK_LIBS ${DORIS_LINK_LIBS}
         "-framework CoreFoundation"

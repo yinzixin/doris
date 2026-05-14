@@ -90,8 +90,8 @@ public:
 
     Status get_next_block_inner(Block* block, size_t* read_rows, bool* eof) final;
 
-    enum { DATA, POSITION_DELETE, EQUALITY_DELETE, DELETION_VECTOR };
-    enum Fileformat { NONE, PARQUET, ORC, AVRO };
+    enum class FileContent { DATA, POSITION_DELETE, EQUALITY_DELETE, DELETION_VECTOR };
+    enum class Fileformat { NONE, PARQUET, ORC, AVRO };
 
     virtual void set_delete_rows() = 0;
 

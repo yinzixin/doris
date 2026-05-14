@@ -241,11 +241,11 @@ Status IcebergTableReader::init_row_filters() {
     std::vector<TIcebergDeleteFileDesc> equality_delete_files;
     std::vector<TIcebergDeleteFileDesc> deletion_vector_files;
     for (const TIcebergDeleteFileDesc& desc : table_desc.delete_files) {
-        if (desc.content == POSITION_DELETE) {
+        if (desc.content == static_cast<int32_t>(FileContent::POSITION_DELETE)) {
             position_delete_files.emplace_back(desc);
-        } else if (desc.content == EQUALITY_DELETE) {
+        } else if (desc.content == static_cast<int32_t>(FileContent::EQUALITY_DELETE)) {
             equality_delete_files.emplace_back(desc);
-        } else if (desc.content == DELETION_VECTOR) {
+        } else if (desc.content == static_cast<int32_t>(FileContent::DELETION_VECTOR)) {
             deletion_vector_files.emplace_back(desc);
         }
     }

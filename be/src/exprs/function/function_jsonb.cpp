@@ -2616,7 +2616,8 @@ public:
                 get_json_fun = [json_str](size_t i) { return json_str; };
             }
         } else {
-            json_null_check = [col_json](size_t i) { return col_json->is_null_at(i); };
+            const IColumn* col_json_raw = col_json.get();
+            json_null_check = [col_json_raw](size_t i) { return col_json_raw->is_null_at(i); };
             get_json_fun = [col_json_string](size_t i) { return col_json_string->get_data_at(i); };
         }
 
@@ -2651,7 +2652,8 @@ public:
                 }
             }
         } else {
-            one_null_check = [col_one](size_t i) { return col_one->is_null_at(i); };
+            const IColumn* col_one_raw = col_one.get();
+            one_null_check = [col_one_raw](size_t i) { return col_one_raw->is_null_at(i); };
             one_check = [col_one_string](size_t i, bool* is_one) {
                 const auto& one_or_all = col_one_string->get_data_at(i);
                 std::string one_or_all_str = one_or_all.to_string();
@@ -2690,8 +2692,9 @@ public:
                     block, input_rows_count, json_null_check, get_json_fun, one_null_check,
                     one_check, search_null_check, col_search_string, context, result));
         } else {
-            CheckNullFun search_null_check = [col_search](size_t i) {
-                return col_search->is_null_at(i);
+            const IColumn* col_search_raw = col_search.get();
+            CheckNullFun search_null_check = [col_search_raw](size_t i) {
+                return col_search_raw->is_null_at(i);
             };
             RETURN_IF_ERROR(execute_vector<false>(
                     block, input_rows_count, json_null_check, get_json_fun, one_null_check,
