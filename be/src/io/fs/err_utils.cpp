@@ -18,6 +18,7 @@
 #include "io/fs/err_utils.h"
 
 // IWYU pragma: no_include <bthread/errno.h>
+#include <aws/s3-crt/S3CrtErrors.h>
 #include <aws/s3/S3Errors.h>
 #include <errno.h> // IWYU pragma: keep
 #include <fmt/format.h>
@@ -122,7 +123,11 @@ Status localfs_error(int posix_errno, std::string_view msg) {
     }
 }
 
-Status s3fs_error(const Aws::S3::S3Error& err, std::string_view msg) {
+namespace {
+// Implementation shared by the S3 and S3Crt overloads — both error types
+// derive from Aws::Client::AWSError<E> and only the base accessors are used.
+template <typename ErrorT>
+Status s3fs_error_impl(const ErrorT& err, std::string_view msg) {
     using namespace Aws::Http;
     switch (err.GetResponseCode()) {
     case HttpResponseCode::NOT_FOUND:
@@ -138,6 +143,15 @@ Status s3fs_error(const Aws::S3::S3Error& err, std::string_view msg) {
                 "{}: {} {} code={} type={}, request_id={}", msg, err.GetExceptionName(),
                 err.GetMessage(), err.GetResponseCode(), err.GetErrorType(), err.GetRequestId());
     }
+}
+} // namespace
+
+Status s3fs_error(const Aws::S3::S3Error& err, std::string_view msg) {
+    return s3fs_error_impl(err, msg);
+}
+
+Status s3fs_error(const Aws::S3Crt::S3CrtError& err, std::string_view msg) {
+    return s3fs_error_impl(err, msg);
 }
 
 } // namespace io

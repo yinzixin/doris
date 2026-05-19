@@ -289,12 +289,14 @@ public:
         _range_cached_data.resize(random_access_ranges.size());
         _size = _reader->size();
         _remaining = TOTAL_BUFFER_SIZE;
-        _is_oss = typeid_cast<io::S3FileReader*>(_reader.get()) != nullptr;
+        auto* s3_reader = typeid_cast<io::S3FileReader*>(_reader.get());
+        _is_oss = (s3_reader != nullptr);
         _max_amplified_ratio = config::max_amplified_read_ratio;
-        // Equivalent min size of each IO that can reach the maximum storage speed limit:
-        // 1MB for oss, 8KB for hdfs
-        _equivalent_io_size =
-                _is_oss ? config::merged_oss_min_io_size : config::merged_hdfs_min_io_size;
+        // Equivalent min size of each IO that can reach the maximum storage speed limit.
+        // S3FileReader carries an Express-aware override (smaller on Express);
+        // HDFS keeps the 8 KiB default.
+        _equivalent_io_size = s3_reader ? s3_reader->merge_min_io_size()
+                                        : config::merged_hdfs_min_io_size;
 
         _merged_read_slice_size = merge_read_slice_size;
 

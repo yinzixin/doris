@@ -641,7 +641,12 @@ PrefetchBufferedReader::PrefetchBufferedReader(RuntimeProfile* profile, io::File
                                                int64_t buffer_size)
         : _reader(std::move(reader)), _file_range(file_range), _io_ctx(io_ctx) {
     if (buffer_size == -1L) {
-        buffer_size = config::remote_storage_read_buffer_mb * 1024 * 1024;
+        if (auto* s3_reader = typeid_cast<io::S3FileReader*>(_reader.get());
+            s3_reader != nullptr && s3_reader->prefetch_buffer_bytes() > 0) {
+            buffer_size = s3_reader->prefetch_buffer_bytes();
+        } else {
+            buffer_size = config::remote_storage_read_buffer_mb * 1024 * 1024;
+        }
     }
     _size = _reader->size();
     _whole_pre_buffer_size = buffer_size;
@@ -857,15 +862,26 @@ Result<io::FileReaderSPtr> DelegateReader::create_file_reader(
 
                 if (access_mode == AccessMode::SEQUENTIAL) {
                     bool is_thread_safe = false;
-                    if (typeid_cast<io::S3FileReader*>(reader.get())) {
+                    io::S3FileReader* s3_reader =
+                            typeid_cast<io::S3FileReader*>(reader.get());
+                    if (s3_reader) {
                         is_thread_safe = true;
                     } else if (auto* cached_reader =
                                        typeid_cast<io::CachedRemoteFileReader*>(reader.get());
                                cached_reader &&
-                               typeid_cast<io::S3FileReader*>(cached_reader->get_remote_reader())) {
+                               (s3_reader = typeid_cast<io::S3FileReader*>(
+                                        cached_reader->get_remote_reader()))) {
                         is_thread_safe = true;
                     }
                     if (is_thread_safe) {
+                        // Skip the app-side prefetch window for the CRT-Express path —
+                        // aws-c-s3 already splits each ranged GET into parallel
+                        // sub-range fetches across its connection pool, so stacking
+                        // PrefetchBufferedReader on top duplicates parallelism and
+                        // inflates memory.
+                        if (s3_reader && s3_reader->uses_crt_client()) {
+                            return reader;
+                        }
                         // PrefetchBufferedReader needs thread-safe reader to prefetch data concurrently.
                         return std::make_shared<io::PrefetchBufferedReader>(
                                 profile, std::move(reader), file_range, io_ctx);

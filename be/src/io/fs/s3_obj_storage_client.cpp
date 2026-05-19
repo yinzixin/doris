@@ -30,6 +30,9 @@
 #include <aws/core/utils/memory/stl/AWSStringStream.h>
 #include <aws/core/utils/memory/stl/AWSVector.h>
 #include <aws/core/utils/threading/Executor.h>
+#include <aws/s3-crt/S3CrtClient.h>
+#include <aws/s3-crt/model/GetObjectRequest.h>
+#include <aws/s3-crt/model/GetObjectResult.h>
 #include <aws/s3/S3Client.h>
 #include <aws/s3/S3Errors.h>
 #include <aws/s3/model/AbortMultipartUploadRequest.h>
@@ -73,11 +76,15 @@
 #include "cpp/sync_point.h"
 #include "io/fs/err_utils.h"
 #include "io/fs/s3_common.h"
+#include "io/fs/s3_express.h"
 #include "util/bvar_helper.h"
 
 namespace {
-inline ::Aws::Client::AWSError<::Aws::S3::S3Errors> s3_error_factory() {
-    return {::Aws::S3::S3Errors::INTERNAL_FAILURE, "exceeds limit", "exceeds limit", false};
+// Return a core-level AWS error; both S3Error and S3CrtError have implicit
+// constructors from AWSError<CoreErrors>, so this works for either client's
+// Outcome<R, E> failure path.
+inline ::Aws::Client::AWSError<::Aws::Client::CoreErrors> s3_error_factory() {
+    return {::Aws::Client::CoreErrors::INTERNAL_FAILURE, "exceeds limit", "exceeds limit", false};
 }
 
 template <typename Func>
@@ -121,13 +128,6 @@ using namespace Aws::S3::Model;
 static constexpr int S3_REQUEST_THRESHOLD_MS = 5000;
 
 namespace {
-// S3 Express One Zone endpoints follow the pattern
-// "*.s3express-<zone>.<region>.amazonaws.com" — substring match is sufficient
-// for both the gateway and the s3express subdomain forms.
-bool is_s3_express_endpoint(const std::string& endpoint) {
-    return endpoint.find("s3express") != std::string::npos;
-}
-
 // AWS expects the CRC32C value as the big-endian 4-byte representation, base64-encoded.
 Aws::String compute_crc32c_b64(std::string_view data) {
     uint32_t crc = crc32c::Crc32c(reinterpret_cast<const uint8_t*>(data.data()), data.size());
@@ -142,6 +142,14 @@ Aws::String compute_crc32c_b64(std::string_view data) {
 S3ObjStorageClient::S3ObjStorageClient(std::shared_ptr<Aws::S3::S3Client> client,
                                        const std::string& endpoint)
         : _client(std::move(client)),
+          _disable_content_md5(config::s3_disable_content_md5 ||
+                               is_s3_express_endpoint(endpoint)) {}
+
+S3ObjStorageClient::S3ObjStorageClient(std::shared_ptr<Aws::S3::S3Client> client,
+                                       std::shared_ptr<Aws::S3Crt::S3CrtClient> crt_client,
+                                       const std::string& endpoint)
+        : _client(std::move(client)),
+          _crt_client(std::move(crt_client)),
           _disable_content_md5(config::s3_disable_content_md5 ||
                                is_s3_express_endpoint(endpoint)) {}
 
@@ -359,12 +367,39 @@ ObjectStorageHeadResponse S3ObjStorageClient::head_object(const ObjectStoragePat
 ObjectStorageResponse S3ObjStorageClient::get_object(const ObjectStoragePathOptions& opts,
                                                      void* buffer, size_t offset, size_t bytes_read,
                                                      size_t* size_return) {
-    Aws::S3::Model::GetObjectRequest request;
-    request.WithBucket(opts.bucket).WithKey(opts.key);
-    request.SetRange(fmt::format("bytes={}-{}", offset, offset + bytes_read - 1));
-    request.SetResponseStreamFactory(AwsWriteableStreamFactory(buffer, bytes_read));
+    auto range = fmt::format("bytes={}-{}", offset, offset + bytes_read - 1);
 
     SCOPED_BVAR_LATENCY(s3_bvar::s3_get_latency);
+    if (_crt_client) {
+        // CRT path: aws-c-s3 internally splits the range into parallel sub-range
+        // GETs over a tuned connection pool. SetRange is preserved end-to-end.
+        Aws::S3Crt::Model::GetObjectRequest request;
+        request.WithBucket(opts.bucket).WithKey(opts.key);
+        request.SetRange(range);
+        request.SetResponseStreamFactory(AwsWriteableStreamFactory(buffer, bytes_read));
+
+        auto outcome = s3_get_rate_limit([&]() { return _crt_client->GetObject(request); });
+        if (!outcome.IsSuccess()) {
+            return {convert_to_obj_response(s3fs_error(
+                            outcome.GetError(), fmt::format("failed to read from {}", opts.key))),
+                    static_cast<int>(outcome.GetError().GetResponseCode()),
+                    outcome.GetError().GetRequestId()};
+        }
+        *size_return = outcome.GetResult().GetContentLength();
+        SYNC_POINT_CALLBACK("s3_obj_storage_client::get_object", size_return);
+        if (*size_return != bytes_read) {
+            return {convert_to_obj_response(Status::InternalError(
+                    "failed to read from {}(bytes read: {}, bytes req: {}), request_id: {}",
+                    opts.key, *size_return, bytes_read, outcome.GetResult().GetRequestId()))};
+        }
+        return ObjectStorageResponse::OK();
+    }
+
+    Aws::S3::Model::GetObjectRequest request;
+    request.WithBucket(opts.bucket).WithKey(opts.key);
+    request.SetRange(range);
+    request.SetResponseStreamFactory(AwsWriteableStreamFactory(buffer, bytes_read));
+
     auto outcome = s3_get_rate_limit([&]() { return _client->GetObject(request); });
     if (!outcome.IsSuccess()) {
         return {convert_to_obj_response(s3fs_error(

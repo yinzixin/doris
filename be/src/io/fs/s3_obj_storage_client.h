@@ -27,6 +27,10 @@ class CompletedPart;
 }
 } // namespace Aws::S3
 
+namespace Aws::S3Crt {
+class S3CrtClient;
+} // namespace Aws::S3Crt
+
 namespace doris::io {
 class ObjClientHolder;
 
@@ -34,6 +38,11 @@ class S3ObjStorageClient final : public ObjStorageClient {
 public:
     explicit S3ObjStorageClient(std::shared_ptr<Aws::S3::S3Client> client,
                                 const std::string& endpoint = {});
+    // Express variant: legacy client handles control plane / write path; the CRT
+    // client owns ranged GETs and performs internal multi-range parallelism.
+    S3ObjStorageClient(std::shared_ptr<Aws::S3::S3Client> client,
+                       std::shared_ptr<Aws::S3Crt::S3CrtClient> crt_client,
+                       const std::string& endpoint);
     ~S3ObjStorageClient() override = default;
     ObjectStorageUploadResponse create_multipart_upload(
             const ObjectStoragePathOptions& opts) override;
@@ -57,8 +66,15 @@ public:
     std::string generate_presigned_url(const ObjectStoragePathOptions& opts,
                                        int64_t expiration_secs, const S3ClientConf&) override;
 
+    // True iff this client routes GetObject through Aws::S3Crt::S3CrtClient.
+    // Used by S3FileReader to skip the app-level retry loop and by
+    // DelegateReader to bypass PrefetchBufferedReader, since CRT performs its
+    // own ranged-GET parallelism and retry internally.
+    bool has_crt_client() const override { return _crt_client != nullptr; }
+
 private:
     std::shared_ptr<Aws::S3::S3Client> _client;
+    std::shared_ptr<Aws::S3Crt::S3CrtClient> _crt_client;
     // True for S3 Express One Zone endpoints (or when config::s3_disable_content_md5
     // is on). When set, uploads send a CRC32C checksum instead of Content-MD5,
     // since S3 Express returns 501 NotImplemented for the latter.

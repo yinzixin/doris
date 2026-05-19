@@ -728,7 +728,7 @@ if (GLIBC_COMPATIBILITY)
 endif()
 
 if (NOT OS_MACOSX)
-    if(EXISTS /lib/x86_64-linux-gnu/libsframe.a OR EXISTS /usr/lib/x86_64-linux-gnu/libsframe.a)
+    if(EXISTS /lib/x86_64-linux-gnu/libsframe.a OR EXISTS /usr/lib/x86_64-linux-gnu/libsframe.a OR EXISTS /lib/aarch64-linux-gnu/libsframe.a OR EXISTS /usr/lib/aarch64-linux-gnu/libsframe.a)
         set(CMAKE_CXX_STANDARD_LIBRARIES "-lrt -l:libbfd.a -l:libsframe.a -liberty -lc -lm -ldl -pthread")
         set(CMAKE_C_STANDARD_LIBRARIES "-lrt -l:libbfd.a -l:libsframe.a -liberty -lc -lm -ldl -pthread")
     else()

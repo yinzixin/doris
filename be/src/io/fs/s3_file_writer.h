@@ -113,6 +113,9 @@ private:
     std::unique_ptr<AsyncCloseStatusPack> _async_close_pack;
     State _state {State::OPENED};
     std::shared_ptr<ObjClientHolder> _obj_client;
+    // Multipart part size captured at construction. Tracks s3_write_buffer_size
+    // for standard S3 and the larger Express-tuned default for s3express buckets.
+    size_t _part_size = 0;
     std::optional<std::chrono::steady_clock::time_point> _first_append_timestamp;
     bool _close_latency_recorded = false;
 };

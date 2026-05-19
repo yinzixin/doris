@@ -61,6 +61,24 @@ protected:
 
     void _collect_profile_before_close() override;
 
+public:
+    // True when the reader targets an S3 Express One Zone bucket. Cached at
+    // construction so downstream readers (MergeRangeFileReader,
+    // PrefetchBufferedReader) can pick up Express-specific tunings without
+    // re-detecting on the hot path.
+    bool is_express() const { return _is_express; }
+    // Coalescing threshold for adjacent small ranges. Express-aware override of
+    // config::merged_oss_min_io_size — see s3_express_merged_io_min_size.
+    int32_t merge_min_io_size() const { return _merge_min_io_size; }
+    // Whole-window size used by PrefetchBufferedReader. -1 means "fall back to
+    // config::remote_storage_read_buffer_mb"; positive value is the Express
+    // override in bytes.
+    int64_t prefetch_buffer_bytes() const { return _prefetch_buffer_bytes; }
+    // True iff the underlying ObjStorageClient routes GetObject through
+    // Aws::S3Crt::S3CrtClient. CRT performs its own ranged-GET parallelism, so
+    // the caller-side prefetch loop and retry budget should be disabled.
+    bool uses_crt_client() const { return _uses_crt_client; }
+
 private:
     struct S3Statistics {
         int64_t total_get_request_counter = 0;
@@ -80,6 +98,11 @@ private:
 
     RuntimeProfile* _profile = nullptr;
     S3Statistics _s3_stats;
+
+    bool _is_express = false;
+    int32_t _merge_min_io_size = 0;
+    int64_t _prefetch_buffer_bytes = -1;
+    bool _uses_crt_client = false;
 };
 
 } // namespace io

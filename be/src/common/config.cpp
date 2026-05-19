@@ -1269,6 +1269,9 @@ DEFINE_mInt32(tablet_path_check_batch_size, "1000");
 
 // it must be larger than or equal to 5MB
 DEFINE_mInt64(s3_write_buffer_size, "5242880");
+DEFINE_mInt64(s3_express_write_buffer_size, "0");
+DEFINE_mInt32(s3_express_merged_io_min_size, "262144");
+DEFINE_mInt32(s3_express_prefetch_buffer_mb, "4");
 // Log interval when doing s3 upload task
 DEFINE_mInt32(s3_file_writer_log_interval_second, "60");
 DEFINE_mInt64(file_cache_max_file_reader_cache_size, "1000000");
@@ -1454,6 +1457,13 @@ DEFINE_Int64(wait_cancel_release_memory_ms, "5000");
 DEFINE_mBool(check_segment_when_build_rowset_meta, "false");
 
 DEFINE_mInt32(max_s3_client_retry, "10");
+DEFINE_mInt32(s3_express_max_client_retry, "0");
+DEFINE_mInt32(s3_express_request_timeout_ms, "0");
+DEFINE_mInt32(s3_express_connect_timeout_ms, "0");
+DEFINE_mDouble(s3_express_crt_throughput_gbps, "5.0");
+DEFINE_mInt64(s3_express_crt_part_size_mb, "8");
+DEFINE_mInt64(s3_express_crt_memory_limit_mb, "2048");
+DEFINE_mInt64(s3_express_crt_max_connections, "0");
 DEFINE_mInt32(s3_read_base_wait_time_ms, "100");
 DEFINE_mInt32(s3_read_max_wait_time_ms, "800");
 DEFINE_mBool(enable_s3_object_check_after_upload, "true");

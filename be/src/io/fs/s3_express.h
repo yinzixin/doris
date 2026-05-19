@@ -17,32 +17,22 @@
 
 #pragma once
 
-#include <string>
-#include <system_error>
+#include <string_view>
 
-#include "common/status.h"
+namespace doris::io {
 
-namespace Aws::S3 {
-class S3Error;
-} // namespace Aws::S3
+// AWS S3 Express One Zone endpoints follow the pattern
+// "*.s3express-<zone>.<region>.amazonaws.com". Substring match covers both the
+// gateway and the zonal subdomain forms.
+inline bool is_s3_express_endpoint(std::string_view endpoint) {
+    return endpoint.find("s3express") != std::string_view::npos;
+}
 
-namespace Aws::S3Crt {
-class S3CrtError;
-} // namespace Aws::S3Crt
+// True when either the endpoint or the bucket name (with the "--x-s3" directory
+// bucket suffix) identifies an S3 Express One Zone target.
+inline bool is_s3_express(std::string_view endpoint, std::string_view bucket) {
+    return is_s3_express_endpoint(endpoint) ||
+           bucket.find("--x-s3") != std::string_view::npos;
+}
 
-namespace doris {
-namespace io {
-
-std::string errno_to_str();
-std::string errcode_to_str(const std::error_code& ec);
-int error_code_to_errno(const std::error_code& ec);
-std::string hdfs_error();
-std::string glob_err_to_str(int code);
-
-Status localfs_error(const std::error_code& ec, std::string_view msg);
-Status localfs_error(int posix_errno, std::string_view msg);
-Status s3fs_error(const Aws::S3::S3Error& err, std::string_view msg);
-Status s3fs_error(const Aws::S3Crt::S3CrtError& err, std::string_view msg);
-
-} // namespace io
-} // namespace doris
+} // namespace doris::io

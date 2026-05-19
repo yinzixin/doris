@@ -130,6 +130,10 @@ public:
     virtual std::string generate_presigned_url(const ObjectStoragePathOptions& opts,
                                                int64_t expiration_secs,
                                                const S3ClientConf& conf) = 0;
+    // True iff this client routes GetObject through Aws::S3Crt::S3CrtClient.
+    // Only the S3 backend implements this; the default is false. Callers use it
+    // to skip duplicate retry / prefetch layers that CRT already provides.
+    virtual bool has_crt_client() const { return false; }
 };
 } // namespace io
 } // namespace doris

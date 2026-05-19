@@ -1313,6 +1313,20 @@ DECLARE_mInt32(tablet_path_check_batch_size);
 
 // it must be larger than or equal to 5MB
 DECLARE_mInt64(s3_write_buffer_size);
+// Multipart part size used when writing to AWS S3 Express One Zone (directory
+// buckets). When >0, overrides s3_write_buffer_size for Express writers. When
+// 0, the Express writer uses an 8 MiB built-in default — Express request cost
+// dominates throughput, so slightly larger parts cut request count without
+// hurting concurrency.
+DECLARE_mInt64(s3_express_write_buffer_size);
+// Per-Express override for the small-IO coalescing threshold used by
+// MergeRangeFileReader. Default 256 KiB — Express's ~10x lower latency moves
+// the read-amplification breakeven point below the standard-S3 1 MiB default.
+DECLARE_mInt32(s3_express_merged_io_min_size);
+// Per-Express override (MiB) for PrefetchBufferedReader's whole-window size,
+// replacing remote_storage_read_buffer_mb for Express readers. Default 4 MiB —
+// low Express latency makes large readahead wasteful.
+DECLARE_mInt32(s3_express_prefetch_buffer_mb);
 // Log interval when doing s3 upload task
 DECLARE_mInt32(s3_file_writer_log_interval_second);
 // the max number of cached file handle for block segemnt
@@ -1562,6 +1576,27 @@ DECLARE_mInt64(s3_put_token_per_second);
 DECLARE_mInt64(s3_put_token_limit);
 // max s3 client retry times
 DECLARE_mInt32(max_s3_client_retry);
+// Per-Express override for the retry count passed to S3CustomRetryStrategy.
+// 0 means use the Express built-in default (15). Higher than max_s3_client_retry
+// because CreateSession can return transient 5xx during credential refresh under
+// concurrency, and retries are cheap on Express.
+DECLARE_mInt32(s3_express_max_client_retry);
+// Per-Express override for requestTimeoutMs. 0 means use the built-in default
+// (5000 ms). Express p99 is sub-100 ms; shorter timeout fails fast on stuck TLS.
+DECLARE_mInt32(s3_express_request_timeout_ms);
+// Per-Express override for connectTimeoutMs. 0 means use the built-in default
+// (1000 ms). Express endpoints are zonal so RTT is sub-ms.
+DECLARE_mInt32(s3_express_connect_timeout_ms);
+
+// CRT (Aws::S3Crt::S3CrtClient) tuning for Express buckets. The CRT client
+// internally parallelises ranged GETs across a connection pool sized from
+// throughputTargetGbps. These knobs only take effect on Express buckets — the
+// legacy S3 client path is untouched.
+DECLARE_mDouble(s3_express_crt_throughput_gbps);
+DECLARE_mInt64(s3_express_crt_part_size_mb);
+DECLARE_mInt64(s3_express_crt_memory_limit_mb);
+// 0 means let CRT auto-size the connection pool from throughputTargetGbps.
+DECLARE_mInt64(s3_express_crt_max_connections);
 // When meet s3 429 error, the "get" request will
 // sleep s3_read_base_wait_time_ms (*1, *2, *3, *4) ms
 // get try again.

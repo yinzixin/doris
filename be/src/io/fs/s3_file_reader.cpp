@@ -37,6 +37,7 @@
 #include "io/fs/err_utils.h"
 #include "io/fs/obj_storage_client.h"
 #include "io/fs/s3_common.h"
+#include "io/fs/s3_express.h"
 #include "runtime/runtime_profile.h"
 #include "runtime/thread_context.h"
 #include "runtime/workload_management/io_throttle.h"
@@ -90,6 +91,20 @@ S3FileReader::S3FileReader(std::shared_ptr<const ObjClientHolder> client, std::s
     s3_file_reader_total << 1;
     s3_file_being_read << 1;
 
+    const auto& conf = _client->s3_client_conf();
+    _is_express = is_s3_express(conf.endpoint, conf.bucket);
+    if (_is_express) {
+        _merge_min_io_size = config::s3_express_merged_io_min_size;
+        _prefetch_buffer_bytes =
+                static_cast<int64_t>(config::s3_express_prefetch_buffer_mb) * 1024 * 1024;
+    } else {
+        _merge_min_io_size = config::merged_oss_min_io_size;
+        _prefetch_buffer_bytes = -1;
+    }
+    if (auto client_sp = _client->get(); client_sp != nullptr) {
+        _uses_crt_client = client_sp->has_crt_client();
+    }
+
     Aws::Http::SetCompliantRfc3986Encoding(true);
 }
 
@@ -134,7 +149,12 @@ Status S3FileReader::read_at_impl(size_t offset, Slice result, size_t* bytes_rea
     int retry_count = 0;
     const int base_wait_time = config::s3_read_base_wait_time_ms; // Base wait time in milliseconds
     const int max_wait_time = config::s3_read_max_wait_time_ms; // Maximum wait time in milliseconds
-    const int max_retries = config::max_s3_client_retry; // wait 1s, 2s, 4s, 8s for each backoff
+    // CRT performs its own ranged-retry internally (aws-c-http standard backoff).
+    // Stacking another exponential layer on top just delays failure visibility,
+    // so cap our retry budget at 0 in that case — keep the 429 detection branch
+    // for bvar accounting only.
+    const int max_retries =
+            _uses_crt_client ? 0 : config::max_s3_client_retry; // wait 1s, 2s, 4s, 8s for each backoff
 
     int64_t begin_ts = std::chrono::duration_cast<std::chrono::microseconds>(
                                std::chrono::system_clock::now().time_since_epoch())

@@ -27,6 +27,8 @@
 #include <aws/core/utils/logging/LogSystemInterface.h>
 #include <aws/core/utils/memory/stl/AWSStringStream.h>
 #include <aws/identity-management/auth/STSAssumeRoleCredentialsProvider.h>
+#include <aws/s3-crt/ClientConfiguration.h>
+#include <aws/s3-crt/S3CrtClient.h>
 #include <aws/s3/S3Client.h>
 #include <aws/sts/STSClient.h>
 #include <bvar/reducer.h>
@@ -62,6 +64,7 @@
 #endif
 #include "exec/scan/scanner_scheduler.h"
 #include "io/fs/obj_storage_client.h"
+#include "io/fs/s3_express.h"
 #include "io/fs/s3_obj_storage_client.h"
 #include "runtime/exec_env.h"
 #include "util/s3_uri.h"
@@ -496,9 +499,20 @@ std::shared_ptr<io::ObjStorageClient> S3ClientFactory::_create_s3_client(
     // endpoint-rules resolver is active. This is required for S3 Express One Zone:
     // the resolver detects the --x-s3 bucket suffix, calls CreateSession, and signs
     // requests with service name "s3express" instead of "s3".
+    // S3 Express buckets are identified by the --x-s3 suffix or an s3express endpoint.
+    // Detection happens early so each per-Express override below is one consistent flag.
+    const bool is_s3_express = io::is_s3_express(s3_conf.endpoint, s3_conf.bucket);
+
     Aws::S3::S3ClientConfiguration aws_config;
     aws_config.region = s3_conf.region;
-    aws_config.useVirtualAddressing = s3_conf.use_virtual_addressing;
+    // S3 Express only accepts virtual-hosted addressing; force it on regardless of
+    // the per-conf preference and warn if the caller asked for path-style.
+    if (is_s3_express && !s3_conf.use_virtual_addressing) {
+        LOG(WARNING) << "S3 Express requires virtual-hosted addressing; ignoring "
+                        "use_path_style=true for bucket "
+                     << s3_conf.bucket;
+    }
+    aws_config.useVirtualAddressing = is_s3_express ? true : s3_conf.use_virtual_addressing;
 
     if (_ca_cert_file_path.empty()) {
         _ca_cert_file_path = get_valid_ca_cert_path(doris::split(config::ca_cert_file_paths, ";"));
@@ -517,24 +531,42 @@ std::shared_ptr<io::ObjStorageClient> S3ClientFactory::_create_s3_client(
     aws_config.requestTimeoutMs = 30000;
     if (s3_conf.request_timeout_ms > 0) {
         aws_config.requestTimeoutMs = s3_conf.request_timeout_ms;
+    } else if (is_s3_express) {
+        aws_config.requestTimeoutMs = config::s3_express_request_timeout_ms > 0
+                                              ? config::s3_express_request_timeout_ms
+                                              : 5000;
     }
 
     if (s3_conf.connect_timeout_ms > 0) {
         aws_config.connectTimeoutMs = s3_conf.connect_timeout_ms;
+    } else if (is_s3_express) {
+        aws_config.connectTimeoutMs = config::s3_express_connect_timeout_ms > 0
+                                              ? config::s3_express_connect_timeout_ms
+                                              : 1000;
     }
 
-    if (config::s3_client_http_scheme == "http") {
+    if (is_s3_express) {
+        // CreateSession + sigv4-s3express signing assume TLS.
+        if (config::s3_client_http_scheme == "http") {
+            LOG(WARNING) << "S3 Express requires HTTPS; overriding "
+                            "s3_client_http_scheme=http for bucket "
+                         << s3_conf.bucket;
+        }
+        aws_config.scheme = Aws::Http::Scheme::HTTPS;
+    } else if (config::s3_client_http_scheme == "http") {
         aws_config.scheme = Aws::Http::Scheme::HTTP;
     }
 
-    aws_config.retryStrategy = std::make_shared<S3CustomRetryStrategy>(
-            config::max_s3_client_retry /*scaleFactor = 25*/);
+    const int retry_count =
+            is_s3_express ? (config::s3_express_max_client_retry > 0
+                                     ? config::s3_express_max_client_retry
+                                     : 15)
+                          : static_cast<int>(config::max_s3_client_retry);
+    aws_config.retryStrategy = std::make_shared<S3CustomRetryStrategy>(retry_count /*scaleFactor = 25*/);
 
-    // S3 Express buckets are identified by the --x-s3 suffix or an s3express endpoint.
-    // Skip endpointOverride for these so the SDK resolves the bucket-specific endpoint
-    // and manages CreateSession automatically. For all other buckets, keep the override.
-    const bool is_s3_express = s3_conf.endpoint.find("s3express") != std::string::npos ||
-                               s3_conf.bucket.find("--x-s3") != std::string::npos;
+    // Skip endpointOverride for Express so the SDK resolves the bucket-specific
+    // endpoint and manages CreateSession automatically. For all other buckets,
+    // keep the override.
     if (s3_conf.need_override_endpoint && !is_s3_express) {
         aws_config.endpointOverride = s3_conf.endpoint;
     }
@@ -544,6 +576,42 @@ std::shared_ptr<io::ObjStorageClient> S3ClientFactory::_create_s3_client(
             get_aws_credentials_provider(s3_conf),
             Aws::MakeShared<Aws::S3::S3EndpointProvider>("S3Client"),
             aws_config);
+
+    if (is_s3_express) {
+        // CRT client for the read path. aws-c-s3 internally parallelises ranged
+        // GETs across a connection pool sized from throughputTargetGbps.
+        // Writer and control-plane operations stay on the legacy client above.
+        Aws::S3Crt::ClientConfiguration crt_config;
+        crt_config.region = s3_conf.region;
+        crt_config.useVirtualAddressing = true;
+        crt_config.scheme = Aws::Http::Scheme::HTTPS;
+        if (!_ca_cert_file_path.empty()) {
+            crt_config.caFile = _ca_cert_file_path;
+        }
+        crt_config.throughputTargetGbps = config::s3_express_crt_throughput_gbps;
+        if (config::s3_express_crt_part_size_mb > 0) {
+            crt_config.partSize =
+                    static_cast<size_t>(config::s3_express_crt_part_size_mb) * 1024 * 1024;
+        }
+        if (config::s3_express_crt_memory_limit_mb > 0) {
+            crt_config.downloadMemoryUsageWindow =
+                    static_cast<size_t>(config::s3_express_crt_memory_limit_mb) * 1024 * 1024;
+        }
+        if (config::s3_express_crt_max_connections > 0) {
+            crt_config.maxConnections =
+                    static_cast<unsigned>(config::s3_express_crt_max_connections);
+        }
+        auto crt_client = std::make_shared<Aws::S3Crt::S3CrtClient>(
+                get_aws_credentials_provider(s3_conf), crt_config);
+        auto obj_client = std::make_shared<io::S3ObjStorageClient>(
+                std::move(new_client), std::move(crt_client), s3_conf.endpoint);
+        LOG_INFO(
+                "create one s3 client (CRT enabled, throughput_target={}Gbps, part_size={}MB) "
+                "with {}",
+                static_cast<double>(config::s3_express_crt_throughput_gbps),
+                static_cast<int64_t>(config::s3_express_crt_part_size_mb), s3_conf.to_string());
+        return obj_client;
+    }
 
     auto obj_client =
             std::make_shared<io::S3ObjStorageClient>(std::move(new_client), s3_conf.endpoint);
